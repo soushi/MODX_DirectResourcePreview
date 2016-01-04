@@ -1,0 +1,2 @@
+# MODX_DirectResourcePreview
+下書きのプレビューをログイン不要で確認できるプラグイン
