@@ -10,7 +10,7 @@
  * @license     http://www.gnu.org/licenses/old-licenses/gpl-2.0.html GNU Public License version 2
  * @internal    @events OnWebPageInit,OnPageNotFound,OnDocFormRender,OnPluginFormRender
  * @internal    @modx_category DirectResourcePreview
- * @internal    @properties 
+ * @internal    @properties &inheritUA=UserAgentを継承する;list;yes,no;no
  */
 
 $title='ダイレクトリソースプレビュー';
@@ -235,6 +235,10 @@ case 'OnPageNotFound':
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_COOKIEJAR,$cookie);
+        //User agentの調整		
+        if( $modx->event->cm->getParam('inheritUA') == 'yes' ){
+            curl_setopt($ch, CURLOPT_USERAGENT,$_SERVER['HTTP_USER_AGENT']);
+        }
         //POSTデータ登録
         $poststring = str_replace('_multivaluetvXXXYYYZZZ','[]', http_build_query($post));
         curl_setopt($ch, CURLOPT_POSTFIELDS,$poststring );
