@@ -1,0 +1,305 @@
+/**
+ * 
+ * ダイレクトリソースプレビュー
+ *
+ * ログイン不要で下書きのプレビューができるプラグイン
+ *
+ * @category    plugin
+ * @version     1.00
+ * @author      soushi
+ * @license     http://www.gnu.org/licenses/old-licenses/gpl-2.0.html GNU Public License version 2
+ * @internal    @events OnWebPageInit,OnPageNotFound,OnDocFormRender,OnPluginFormRender
+ * @internal    @modx_category DirectResourcePreview
+ * @internal    @properties 
+ */
+
+$title='ダイレクトリソースプレビュー';
+$eid = 999;
+
+if( !$this->config['enable_draft'] ){
+    if( $this->event->name == 'OnPluginFormRender' ){
+        $rs  = $this->db->select('name','[+prefix+]site_plugins','id='.$id);
+        $row = $this->db->getRow($rs);
+        if( $row['name'] == 'ダイレクトリソースプレビュー' ){
+            $this->event->cm->addOutput('<p style="color:red;font-weight:bold;">※このプラグインを利用するには下書き機能を有効にする必要があります。</p>');
+        }
+    }
+    return '';
+}
+
+//ハッシュ取得
+$getResourceHash = function ($rid){
+    if( !preg_match('/\A[0-9]+\z/',$rid) ){
+        return false;
+    }
+    $rs = $this->db->select('elmid,checksum','[+prefix+]site_revision',"element = 'resource' AND elmid = $rid");
+    if( $row = $this->db->getRow($rs) ){
+        return $row['checksum'];
+    }
+    return false;
+};
+
+//トークン生成(内部リクエスト側)
+$getToken = function () use ($eid,$title){
+    $token = '';
+    while( empty($token) ){
+        $rs = $this->db->select('id,createdon,source,description','[+prefix+]event_log',"eventid = $eid",'id desc','1');
+        if( $row = $this->db->getRow($rs) ){
+            $token =  $row['id'].':'.md5(implode(':',$row),false);
+        }else{
+            //ログがないとハッシュが作れない為ダミーを作成
+            $this->logEvent($eid, 1, 'ダミー投稿'. mt_rand(), $title);
+        }
+    }
+    return $token;
+};
+//トークン確認(内部リクエスト側)
+$checkToken = function ($token) use ($eid){
+    $mt=[];
+    if( empty($token) || !preg_match('/\A([0-9]+):([0-9a-f]+)\z/',$token,$mt) ){
+        return false;
+    }
+    $id = $mt[1];
+    $hash = $mt[2];
+
+    $rs = $this->db->select('id,createdon,source,description','[+prefix+]event_log',"eventid = $eid",'id desc','10');
+    while( $row = $this->db->getRow($rs) ){
+        if( $row['id'] == $id ){ //最大10件に一致するログがなければNG
+            $tmp = md5(implode(':',$row),false);
+            if( $hash == $tmp ){
+                return true;
+            }
+        }
+    }
+    return false;
+};
+
+//POST情報の生成
+//※基本はMODXコア部分を疑似再現しています。
+$makePost = function ($rid) {
+
+    //---  getValuesFromDB() を参考に作成
+    $from = '[+prefix+]site_content AS sc ';
+    $rs   = $this->db->select('sc.*', $from, "sc.id='{$rid}'");
+    $p    = $this->db->getRow($rs);
+
+    //---  getTmplvars() を参考に作成
+    $tmplVars=array();
+    if( !empty($p['template']) ){
+        $fields = "DISTINCT tv.*, IF(tvc.value!='',tvc.value,tv.default_text) as value";
+        $from = "[+prefix+]site_tmplvars                     AS tv
+             INNER JOIN [+prefix+]site_tmplvar_templates     AS tvtpl ON tvtpl.tmplvarid = tv.id
+             LEFT  JOIN [+prefix+]site_tmplvar_contentvalues AS tvc   ON tvc.tmplvarid   = tv.id AND tvc.contentid='{$rid}'
+         ";
+        $where = "tvtpl.templateid='{$p['template']}'";
+
+        $rs = $this->db->select($fields,$from,$where,'tvtpl.rank,tv.rank, tv.id');
+        if( 0 < $this->db->getRecordCount($rs) ){
+            while($row = $this->db->getRow($rs)){
+                $tmplVars[$row['name']] = $row;
+            }
+        }
+        $p = $p + $tmplVars;
+    }
+
+    $this->loadExtension('REVISION');
+    $revisionObject = $this->revision->getRevisionObject($rid);
+
+    //---  mergeDraft() を参考に作成
+    $revision_content = $this->revision->getDraft($rid);
+    if( !empty($revision_content) ){
+        $rev = $this->db->getObject('site_revision', "elmid='{$rid}'");
+        $p = array_merge($p, $revision_content);
+        foreach( $p as $k=>$v ){
+            if(is_array($v) && isset($v['id'])){
+                $id = $v['id'];
+                if(isset($revision_content["tv{$id}"])){
+                    $p[$k]['value'] = $revision_content["tv{$id}"];
+                    if(isset($p["tv{$id}"])) unset($p["tv{$id}"]);
+                }
+            }
+        }
+    }
+
+    //-------------- 必要なものだけ$postに保存
+    $post=array();
+    $need_key=array('id',
+                    'type',
+                    'contentType',
+                    'content_dispo',
+                    'link_attributes',
+                    'isfolder',
+                    'pagetitle',
+                    'longtitle',
+                    'description',
+                    'alias',
+                    'introtext',
+                    'template',
+                    'menutitle',
+                    'menuindex',
+                    'hidemenu',
+                    'parent',
+                    'richtext',
+                    'searchable',
+                    'cacheable'
+    );
+
+    foreach($need_key as $k){
+        $post[$k] = $p[$k];
+    }
+    $post['ta'] = $p['content'];
+
+    //TV設定
+    foreach($p as $k => $v){
+        if( isset($v['id']) ){
+            if( $v['type'] == 'checkbox'  ||
+                $v['type'] == 'listbox-multiple' ){
+                if( is_array($v['value']) ){ //公開側は文字列、下書きは配列でくる
+                    $tmp = $v['value'];
+                }else{
+                    $tmp=explode('||',$v['value']);
+                }
+                foreach($tmp as $t){
+                    $t=preg_replace('/.*?==/','',$t);
+                    //他に被らないようにユニークな文字列
+                    $post['tv'.$v['id'].'_multivaluetvXXXYYYZZZ'] = $t;
+                }
+            }else{
+                $post['tv'.$v['id']] = $v['value'];
+            }
+        }
+    }
+
+    //固定値
+    $post['a']=128;     //action
+    $post['mode']=131;  //モード
+    $post['MAX_FILE_SIZE']=20971520; //最大ファイルサイズ(おそらく未使用)
+    $post['newtemplate']='';
+    $post['stay']='close';
+    $post['which_editor']='TinyMCE';
+    $post['syncsitecheck']='on';
+    $post['syncsite']=1;
+    $post['hidemenucheck']='on';
+    $post['richtextcheck']='on';
+    $post['searchablecheck']='on';
+    $post['cacheablecheck']='on';
+    $post['token']='ar1zq14grbc4'; //トークン(これは利用しないので適当な文字でOK)
+
+    return $post;
+};
+
+//エラー終了
+$errorEnd = function ($msg) use ($title){
+    $this->logEvent(1,1,$msg,$title);
+    //エラーメッセージもう少し考える
+    echo 'Cannot preview!<br />';
+    echo 'ページが存在しない、もしくはプレビューの有効期限が切れています。';
+    exit();
+};
+
+switch($this->event->name){
+case 'OnWebPageInit':
+case 'OnPageNotFound':
+
+    if( !isset($_GET['drp_mode']) ){
+        return '';
+    }
+    if( empty($this->documentIdentifier) ){
+        return '';
+    }
+    $rid = $this->documentIdentifier;
+
+    switch( $_GET['drp_mode'] ){
+    case 'preview':
+        $hash = $getResourceHash($rid);
+        if( !$hash ){
+            $errorEnd('ハッシュが取得できません。下書きがない可能性があります:'.$rid);
+        }
+        if( $_GET['drp_hash'] != $hash ){
+            $errorEnd('ハッシュが一致しません:'.$rid);
+        }
+        //プレビュー処理
+        $token = $getToken();
+        $tmp = "drp_mode=loopback&drp_token=$token";
+        $url = $this->makeUrl($rid,'',$tmp,'full');
+        $url = preg_replace("/&amp;/",'&', $url); //XTML形式の場合&に変換
+
+        //プレビュー用のPOSTデータ生成
+        $post = $makePost($rid);
+
+        $cookie=tempnam(sys_get_temp_dir(),'cookie_');
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_COOKIEJAR,$cookie);
+        //POSTデータ登録
+        $poststring = str_replace('_multivaluetvXXXYYYZZZ','[]', http_build_query($post));
+        curl_setopt($ch, CURLOPT_POSTFIELDS,$poststring );
+
+        //Basic認証があればセット
+        if( $tmp = apache_request_headers()['Authorization'] ){
+            curl_setopt($ch, CURLOPT_HTTPHEADER, array('Authorization:'.$tmp));
+        }
+
+        $content = curl_exec($ch); //1回目はセッションを作成するためのリクエスト
+        if( curl_getinfo($ch,CURLINFO_HTTP_CODE) == '401' ){
+            //認証が必要な場合は401を返す
+            header('WWW-Authenticate: Basic realm="Basic Auth"');
+            header('HTTP/1.1 401 Authorization Required',true,401);
+            echo $content;
+            exit;
+        }
+
+        $content = curl_exec($ch); //2回目のリクエストをプレビューに利用
+        curl_close($ch);
+
+        echo $content;
+        exit(); //コンテンツを取得しているため、ここで処理終了
+
+        break;
+
+    case 'loopback':
+        //内部リクエスト処理
+        if( !isset($_GET['drp_token']) ){
+            $errorEnd('tokenの入力がありません：'.$rid);
+        }
+        if( !$checkToken($_GET['drp_token']) ){
+            $errorEnd('tokenチェックに失敗しました：'.$rid);
+        }
+        //管理者セッション作成
+        $_SESSION['mgrValidated'] = 1;
+        $_SESSION['mgrPermissions']['save_document'] = 1;
+        //プレビューを通すためのtoken
+        $_SESSION['token'] = time();
+        $_POST['token'] = $_SESSION['token'];
+        break;
+
+    default:
+        $modx->logEvent(1,1,'MODE設定が不正です。',$title);
+        break;
+    }
+    break;
+
+case 'OnDocFormRender':
+
+    //プレビューURLを表示
+    $rid=$modx->event->cm->getParam('id');
+    $hash = $getResourceHash($rid);
+    if( $hash ){
+        $url = $this->makeUrl($id)."?drp_hash={$hash}&drp_mode=preview";
+
+        $out=<<<JS_CODE
+            <script>
+        jQuery("h1.draft").append("<p style='font-size:80%;'>プレビューURL:<br /><a href='$url' target='_blank' >$url</a></p>");
+        </script>
+JS_CODE;
+
+        $this->event->cm->addOutput($out);
+
+    }
+
+    break;
+}
