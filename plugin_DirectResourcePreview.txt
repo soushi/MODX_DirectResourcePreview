@@ -221,7 +221,7 @@ case 'OnPageNotFound':
         //プレビュー処理
         $token = $getToken();
         $tmp = "drp_mode=loopback&drp_token=$token";
-        $url = $this->makeUrl($rid,'',$tmp,'full');
+        $url = $this->makeUrl($rid,'',$tmp,'full',true);
         $url = preg_replace("/&amp;/",'&', $url); //XTML形式の場合&に変換
 
         //プレビュー用のPOSTデータ生成
