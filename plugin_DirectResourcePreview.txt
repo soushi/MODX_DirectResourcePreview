@@ -230,6 +230,7 @@ case 'OnPageNotFound':
         $cookie=tempnam(sys_get_temp_dir(),'cookie_');
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_HEADER, true);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
@@ -257,7 +258,20 @@ case 'OnPageNotFound':
             exit;
         }
 
-        $content = curl_exec($ch); //2回目のリクエストをプレビューに利用
+        $response = curl_exec($ch); //2回目のリクエストをプレビューに利用
+        $header_size = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+        $header = substr($response, 0, $header_size);
+        $content = substr($response, $header_size);
+
+        if( preg_match('/^30/',curl_getinfo($ch,CURLINFO_HTTP_CODE)) ){
+                $content = 'このプレビューはリダイレクトは別URLへリダイレクトされるようになっています。<br />';
+                $tmp = explode("\n",$header);
+                foreach( $tmp as $v ){
+                        if( preg_match('/Location:(.*)/',$v,$mt) ){
+                                $content .= '<br />リダイレクト先：'.$mt[1];
+                        }
+                }
+        }
         curl_close($ch);
 
         echo $content;
