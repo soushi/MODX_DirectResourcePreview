@@ -78,10 +78,18 @@ $checkToken = function ($token) use ($eid){
 //※基本はMODXコア部分を疑似再現しています。
 $makePost = function ($rid) {
 
+    $this->loadExtension('REVISION');
+    $revisionObject = $this->revision->getRevisionObject($rid,'resource','template');
+
     //---  getValuesFromDB() を参考に作成
     $from = '[+prefix+]site_content AS sc ';
     $rs   = $this->db->select('sc.*', $from, "sc.id='{$rid}'");
     $p    = $this->db->getRow($rs);
+
+	//templateが変更されている場合にはtemplate IDを上書き
+	if( $revisionObject['template'] != $p['template'] ){
+		$p['template'] = $revisionObject['template'];
+	}
 
     //---  getTmplvars() を参考に作成
     $tmplVars=array();
@@ -101,9 +109,6 @@ $makePost = function ($rid) {
         }
         $p = $p + $tmplVars;
     }
-
-    $this->loadExtension('REVISION');
-    $revisionObject = $this->revision->getRevisionObject($rid);
 
     //---  mergeDraft() を参考に作成
     $revision_content = $this->revision->getDraft($rid);
